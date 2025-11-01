@@ -12,5 +12,5 @@ if not exist "node_modules" (
     exit /b
 )
 
-echo >>> Menjalankan aplikasi Electron...
+echo Menjalankan aplikasi Electron...
 call npx electron .
