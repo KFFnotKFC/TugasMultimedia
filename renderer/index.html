@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>🎞️ GIF Maker</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 40px; }
+    #dropzone {
+      border: 3px dashed #999;
+      border-radius: 10px;
+      width: 70%;
+      margin: auto;
+      padding: 40px;
+      color: #777;
+    }
+    #dropzone.dragover { border-color: #4caf50; color: #4caf50; }
+    #result { margin-top: 20px; white-space: pre-line; }
+  </style>
+</head>
+<body>
+  <h1>🎞️ GIF Maker</h1>
+  <div id="dropzone">Seret & lepaskan gambar di sini</div>
+  <br>
+  <label>Durasi per frame (ms):</label>
+  <input type="number" id="duration" value="100">
+  <button id="makeGifBtn">Buat GIF</button>
+  <div id="result"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
