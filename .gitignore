@@ -1,3 +1,5 @@
 node_modules/
 data/*
 output/*
+*.swp
+.DS_Store
