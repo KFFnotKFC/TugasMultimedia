@@ -1,7 +1,8 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
-const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const GIFEncoder = require(path.join(__dirname, "gifencoder"));
+const PNG = require("png-js"); // npm install png-js
 
 let win;
 
@@ -34,33 +35,53 @@ ipcMain.handle("save-files", async (event, files) => {
   return `>>> File disimpan ke folder: ${dataDir}`;
 });
 
-// Proses pembuatan GIF
-ipcMain.handle("make-gif", async (event, duration) => {
-  return new Promise((resolve) => {
+// Proses pembuatan GIF dengan gifencoder
+ipcMain.handle("make-gif", async (event, duration = 100) => {
+  try {
+    const files = fs
+      .readdirSync(dataDir)
+      .filter((f) => f.endsWith(".png") || f.endsWith(".jpg"))
+      .sort();
+
+    if (files.length === 0) return "❌ Tidak ada frame di folder data.";
+
+    // Baca ukuran frame pertama
+    const firstFrame = PNG.decode(path.join(dataDir, files[0]));
+    const size = await new Promise((resolve) =>
+      firstFrame.decode((pixels) => {
+        resolve({ width: firstFrame.width, height: firstFrame.height });
+      })
+    );
+
+    const encoder = new GIFEncoder(size.width, size.height);
     const outputPath = path.join(outputDir, "output.gif");
-    const scriptPath = path.join(__dirname, "py/make_gif.py");
+    encoder.createReadStream().pipe(fs.createWriteStream(outputPath));
 
-    console.log("Menjalankan Python script:", scriptPath);
+    encoder.start();
+    encoder.setRepeat(0);
+    encoder.setDelay(Number(duration));
+    encoder.setQuality(10);
 
-    const python = spawn("python", [scriptPath, dataDir, outputPath, duration]);
-    let logs = "";
+    // Tambahkan frame satu per satu
+    for (const f of files) {
+      const png = PNG.decode(path.join(dataDir, f));
+      await new Promise((resolve) =>
+        png.decode((pixels) => {
+          encoder.addFrame(pixels);
+          resolve();
+        })
+      );
+    }
 
-    python.stdout.on("data", (d) => (logs += d.toString()));
-    python.stderr.on("data", (d) => (logs += d.toString()));
+    encoder.finish();
 
-    python.on("close", () => {
-      // Jika berhasil membuat GIF, hapus semua gambar di folder data
-      if (fs.existsSync(outputPath)) {
-        const files = fs.readdirSync(dataDir);
-        for (const file of files) {
-          fs.unlinkSync(path.join(dataDir, file));
-        }
-        logs += `\n>>> GIF berhasil dibuat: ${outputPath}`;
-      } else {
-        logs += "\n[X] GIF gagal dibuat. File output tidak ditemukan.";
-      }
+    // Hapus semua frame di folder data
+    for (const f of files) {
+      fs.unlinkSync(path.join(dataDir, f));
+    }
 
-      resolve(logs);
-    });
-  });
+    return `✅ GIF berhasil dibuat: ${outputPath}`;
+  } catch (err) {
+    return `❌ Error membuat GIF: ${err.message}`;
+  }
 });

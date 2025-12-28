@@ -1,10 +1,18 @@
 const { ipcRenderer } = require("electron");
+const fs = require("fs");
+const path = require("path");
+
+// require gifencoder lokal (folder root/gifencoder)
+const GIFEncoder = require(path.join(__dirname, "..", "gifencoder"));
 
 const dropzone = document.getElementById("dropzone");
 const result = document.getElementById("result");
 const makeGifBtn = document.getElementById("makeGifBtn");
 const durationInput = document.getElementById("duration");
-const path = require("path");
+
+// Folder data & output
+const dataDir = path.join(__dirname, "..", "data");
+const outputDir = path.join(__dirname, "..", "output");
 
 dropzone.addEventListener("dragover", (e) => {
   e.preventDefault();
@@ -30,25 +38,62 @@ dropzone.addEventListener("drop", async (e) => {
     )
   );
 
-  const res = await ipcRenderer.invoke("save-files", buffers);
-  result.textContent = res;
+  // simpan file ke folder data
+  for (const f of buffers) {
+    fs.writeFileSync(path.join(dataDir, f.name), f.buffer);
+  }
+
+  result.textContent = `>>> File disimpan ke folder: ${dataDir}`;
 });
 
 makeGifBtn.addEventListener("click", async () => {
-  const duration = durationInput.value || 100;
+  const duration = parseInt(durationInput.value) || 100;
   result.textContent = "⚙️ Membuat GIF...";
-  const log = await ipcRenderer.invoke("make-gif", duration);
 
-  // Tampilkan log
-  result.textContent = log;
+  // baca semua file gambar dari folder data
+  const files = fs.readdirSync(dataDir).filter(f => /\.(png|jpe?g)$/i.test(f));
 
-  // ✅ ambil path absolut dari hasil output.gif
-  const gifFullPath = path.join(process.cwd(), "output", "output.gif");
+  if (files.length === 0) {
+    result.textContent = "[X] Tidak ada gambar di folder data.";
+    return;
+  }
 
-  // ✅ ubah jadi URL file agar bisa di-load oleh <img>
-  const gifUrl = `file://${gifFullPath}?${Date.now()}`;
+  // tentukan ukuran GIF berdasarkan gambar pertama
+  const sizeOf = require("image-size");
+  const firstImgPath = path.join(dataDir, files[0]);
+  const dimensions = sizeOf(firstImgPath);
+
+  const encoder = new GIFEncoder(dimensions.width, dimensions.height);
+  const outputPath = path.join(outputDir, "output.gif");
+  const stream = fs.createWriteStream(outputPath);
+
+  encoder.createReadStream().pipe(stream);
+  encoder.start();
+  encoder.setRepeat(0);   // loop terus
+  encoder.setDelay(duration);
+  encoder.setQuality(10);
+
+  const { createCanvas, loadImage } = require("canvas");
+  const canvas = createCanvas(dimensions.width, dimensions.height);
+  const ctx = canvas.getContext("2d");
+
+  for (const file of files) {
+    const img = await loadImage(path.join(dataDir, file));
+    ctx.drawImage(img, 0, 0, dimensions.width, dimensions.height);
+    encoder.addFrame(ctx);
+  }
+
+  encoder.finish();
+
+  // hapus file di folder data setelah selesai
+  for (const file of files) {
+    fs.unlinkSync(path.join(dataDir, file));
+  }
+
+  result.textContent = `✅ GIF berhasil dibuat: ${outputPath}`;
 
   // tampilkan preview
+  const gifUrl = `file://${outputPath}?${Date.now()}`;
   const img = document.createElement("img");
   img.src = gifUrl;
   img.alt = "Preview GIF";
