@@ -1,17 +1,14 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const fs = require("fs");
 const path = require("path");
-const GIFEncoder = require(path.join(__dirname, "gifencoder"));
-const PNG = require("png-js"); // npm install png-js
+const { fork } = require("child_process");
 
 let win;
 
-// Folder utama
 const rootDir = process.cwd();
 const dataDir = path.join(rootDir, "data");
 const outputDir = path.join(rootDir, "output");
 
-// Pastikan folder ada
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
 if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
 
@@ -26,7 +23,7 @@ function createWindow() {
 
 app.whenReady().then(createWindow);
 
-// Simpan file hasil drag & drop ke folder data
+// Save files
 ipcMain.handle("save-files", async (event, files) => {
   for (const f of files) {
     const dest = path.join(dataDir, f.name);
@@ -35,53 +32,20 @@ ipcMain.handle("save-files", async (event, files) => {
   return `>>> File disimpan ke folder: ${dataDir}`;
 });
 
-// Proses pembuatan GIF dengan gifencoder
+// Buat GIF menggunakan child process
 ipcMain.handle("make-gif", async (event, duration = 100) => {
-  try {
-    const files = fs
-      .readdirSync(dataDir)
-      .filter((f) => f.endsWith(".png") || f.endsWith(".jpg"))
-      .sort();
+  return new Promise((resolve, reject) => {
+    const child = fork(path.join(__dirname, "core", "gif-worker.js"));
 
-    if (files.length === 0) return "❌ Tidak ada frame di folder data.";
+    child.send({ duration, dataDir, outputDir });
 
-    // Baca ukuran frame pertama
-    const firstFrame = PNG.decode(path.join(dataDir, files[0]));
-    const size = await new Promise((resolve) =>
-      firstFrame.decode((pixels) => {
-        resolve({ width: firstFrame.width, height: firstFrame.height });
-      })
-    );
+    child.on("message", (msg) => {
+      resolve(msg);
+      child.kill();
+    });
 
-    const encoder = new GIFEncoder(size.width, size.height);
-    const outputPath = path.join(outputDir, "output.gif");
-    encoder.createReadStream().pipe(fs.createWriteStream(outputPath));
-
-    encoder.start();
-    encoder.setRepeat(0);
-    encoder.setDelay(Number(duration));
-    encoder.setQuality(10);
-
-    // Tambahkan frame satu per satu
-    for (const f of files) {
-      const png = PNG.decode(path.join(dataDir, f));
-      await new Promise((resolve) =>
-        png.decode((pixels) => {
-          encoder.addFrame(pixels);
-          resolve();
-        })
-      );
-    }
-
-    encoder.finish();
-
-    // Hapus semua frame di folder data
-    for (const f of files) {
-      fs.unlinkSync(path.join(dataDir, f));
-    }
-
-    return `✅ GIF berhasil dibuat: ${outputPath}`;
-  } catch (err) {
-    return `❌ Error membuat GIF: ${err.message}`;
-  }
+    child.on("error", (err) => {
+      reject(`❌ Error worker: ${err.message}`);
+    });
+  });
 });

@@ -30,7 +30,8 @@
   "homepage": "https://github.com/KFFnotKFC/TugasMultimedia#readme",
   "dependencies": {
     "canvas": "^2.11.2",
-    "electron": "^39.2.7"
+    "electron": "^39.2.7",
+    "jpeg-js": "^0.4.4"
   },
   "devDependencies": {
     "after": "~0.8.1",
