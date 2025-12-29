@@ -1,69 +1,106 @@
 const fs = require("fs");
 const path = require("path");
-const GIFEncoder = require(path.join(__dirname, "gifencoder"));
-const PNG = require("png-js");
-const jpeg = require("jpeg-js");
+const GIFEncoder = require("../gifencoder");
+const UPNG = require("./UPNG"); // pastikan path sesuai lokasi UPNG.js
 
-process.on("message", async ({ duration, dataDir, outputDir }) => {
-  try {
-    const files = fs.readdirSync(dataDir).filter(f => /\.(png|jpe?g)$/i.test(f)).sort();
-    if (files.length === 0) {
-      process.send("❌ Tidak ada frame di folder data.");
-      return;
+// ----- Steganografi helper -----
+function hideMessageInFrame(framePixels, message) {
+  const msgBytes = Buffer.from(message, "utf8");
+  let bitIndex = 0;
+  for (let i = 0; i < framePixels.length; i++) {
+    if (bitIndex >= msgBytes.length * 8) break;
+    const byteIndex = Math.floor(bitIndex / 8);
+    const bitInByte = 7 - (bitIndex % 8);
+    const bit = (msgBytes[byteIndex] >> bitInByte) & 1;
+    framePixels[i] = (framePixels[i] & 0xFE) | bit;
+    bitIndex++;
+  }
+  return framePixels;
+}
+
+function extractMessageFromFrame(framePixels, length) {
+  const msgBytes = Buffer.alloc(length);
+  let bitIndex = 0;
+  for (let i = 0; i < framePixels.length && bitIndex < length * 8; i++) {
+    const bit = framePixels[i] & 1;
+    const byteIndex = Math.floor(bitIndex / 8);
+    msgBytes[byteIndex] = (msgBytes[byteIndex] << 1) | bit;
+    bitIndex++;
+    if (bitIndex % 8 === 0 && byteIndex < length) {
+      // finalize byte
+      msgBytes[byteIndex] = msgBytes[byteIndex];
     }
+  }
+  return msgBytes.toString("utf8");
+}
 
-    // Load first image
-    const firstImg = await loadImagePixels(path.join(dataDir, files[0]));
-    const width = firstImg.width;
-    const height = firstImg.height;
+// ----- Load PNG via UPNG.js -----
+async function loadPNGtoRGBA(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  const img = UPNG.decode(buffer);
+  const rgba = UPNG.toRGBA8(img)[0]; // ambil frame pertama
+  return { pixels: rgba, width: img.width, height: img.height };
+}
 
-    const encoder = new GIFEncoder(width, height);
-    const outputPath = path.join(outputDir, "output.gif");
-    const stream = fs.createWriteStream(outputPath);
-    encoder.createReadStream().pipe(stream);
+// ----- Main worker -----
+process.on("message", async (data) => {
+  const { duration, dataDir, outputDir, secretMessage, action, gifFiles } = data;
 
-    encoder.start();
-    encoder.setRepeat(0);
-    encoder.setDelay(Number(duration));
-    encoder.setQuality(10);
-
-    for (const f of files) {
-      const img = await loadImagePixels(path.join(dataDir, f));
-      if (img.width !== width || img.height !== height) {
-        process.send(`❌ Semua gambar harus sama ukuran: ${f}`);
+  try {
+    if (action === "make-gif") {
+      // Ambil semua PNG
+      const files = fs.readdirSync(dataDir).filter(f => f.toLowerCase().endsWith(".png")).sort();
+      if (!files.length) {
+        process.send("❌ Tidak ada PNG untuk membuat GIF.");
         return;
       }
-      encoder.addFrame(img.pixels);
+
+      let firstImg = await loadPNGtoRGBA(path.join(dataDir, files[0]));
+      if (secretMessage) firstImg.pixels = hideMessageInFrame(firstImg.pixels, secretMessage);
+
+      const encoder = new GIFEncoder(firstImg.width, firstImg.height);
+      const outputPath = path.join(outputDir, "output.gif");
+      encoder.createReadStream().pipe(fs.createWriteStream(outputPath));
+
+      encoder.start();
+      encoder.setRepeat(0);
+      encoder.setDelay(duration);
+      encoder.setQuality(10);
+
+      encoder.addFrame(firstImg.pixels);
+
+      for (let i = 1; i < files.length; i++) {
+        const img = await loadPNGtoRGBA(path.join(dataDir, files[i]));
+        encoder.addFrame(img.pixels);
+      }
+
+      encoder.finish();
+      await new Promise(r => setTimeout(r, 100)); // tunggu stream selesai
+
+      for (const f of files) fs.unlinkSync(path.join(dataDir, f));
+
+      process.send(`✅ GIF berhasil dibuat: ${outputPath}`);
+
+    } else if (action === "extract-message") {
+      if (!gifFiles || !gifFiles.length) {
+        process.send("❌ Tidak ada GIF untuk diekstrak.");
+        return;
+      }
+
+      // Ambil GIF pertama
+      const gifPath = path.join(dataDir, gifFiles[0]);
+      const buffer = fs.readFileSync(gifPath);
+      const img = UPNG.decode(buffer);
+      const rgba = UPNG.toRGBA8(img)[0];
+
+      // Panjang pesan dari TXT
+      const msgLength = secretMessage.length;
+      const message = extractMessageFromFrame(rgba, msgLength);
+
+      process.send(`📝 Pesan dalam GIF: ${message}`);
     }
 
-    encoder.finish();
-    await new Promise(r => stream.on("finish", r));
-
-    // Hapus frame
-    for (const f of files) {
-      fs.unlinkSync(path.join(dataDir, f));
-    }
-
-    process.send(`✅ GIF berhasil dibuat: ${outputPath}`);
   } catch (err) {
-    process.send(`❌ Error membuat GIF: ${err.message}`);
+    process.send(`❌ Error di worker: ${err.message}`);
   }
 });
-
-// Fungsi load image
-async function loadImagePixels(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-
-  if (ext === ".png") {
-    return new Promise((resolve) => {
-      const img = PNG.decode(filePath);
-      img.decode((pixels) => resolve({ pixels, width: img.width, height: img.height }));
-    });
-  } else if (ext === ".jpg" || ext === ".jpeg") {
-    const jpegData = fs.readFileSync(filePath);
-    const img = jpeg.decode(jpegData, { useTArray: true });
-    return { pixels: img.data, width: img.width, height: img.height };
-  } else {
-    throw new Error("Format gambar tidak didukung");
-  }
-}
